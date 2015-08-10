@@ -23,6 +23,8 @@ bcbio_prepare_samples.py --out merged --csv danika-singlecell.csv
 wget https://raw.githubusercontent.com/chapmanb/bcbio-nextgen/master/config/templates/illumina-rnaseq.yaml
 
 edit illumina-rnaseq.yaml so it looks like this:
+
+```yaml
 details:
   - analysis: RNA-seq
     genome_build: mm10
@@ -33,11 +35,15 @@ details:
       strandedness: unstranded
 upload:
   dir: ../final
+```
 
+```bash
 bcbio_nextgen.py -w template illumina-rnaseq.yaml danika-singlecell-merged.csv data/merged/
+```
 
 7) run bcbio-nextgen using this Bash script (saved as run_bcbio.sh):
 
+```bash
 #!/bin/bash
 #SBATCH -n 1
 #SBATCH -J danika-singlecell
@@ -50,5 +56,6 @@ bcbio_nextgen.py -w template illumina-rnaseq.yaml danika-singlecell-merged.csv d
 #SBATCH --time=7-00:00
 bcbio_nextgen.py --tag tsc -s slurm --timeout 6000 -n 96 -q general -t ipython  /n/regal/hsph_bioinfo/bcbio_nextgen/galaxy/bcbio_system.yaml ../config/danika-singlecell-merged.ya
 ml
+```
 
 8) get contents of danika-singlecell-merged/final/*project* directory for downstream analysis.
