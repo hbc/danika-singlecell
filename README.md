@@ -1,4 +1,4 @@
-Steps to get the data:
+### Steps to get the data and run bcbio-nextgen
 
 * run the script run.sh which downloads the data from the Broad. This is the contents of the script, it just logs in and grabs everything:
 
