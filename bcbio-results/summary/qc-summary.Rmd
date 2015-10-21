@@ -1,0 +1,586 @@
+---
+  html_document:
+    toc: true
+    highlight: zenburn
+    theme: united
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(tidy=TRUE, highlight=TRUE, dev="png",
+               cache=TRUE, highlight=TRUE, autodep=TRUE, warning=FALSE, error=FALSE,
+               message=FALSE, prompt=TRUE, comment='', fig.cap='')
+```
+
+## Overview
+
+This is the output from
+Danika's single cell run. There are two sets of HSC cells, young and old, along with some pooled samples of 10 and 1,000 cells for each condition to compare to. There is a positive control, but I'm
+not sure what it is.
+
+The reads are paired end, 75bp reads. The library is not great for this though,
+since the average insert size is only 50 bp.
+
+
+```{r qc-setup}
+library(ggplot2)
+library(reshape)
+library(gplots)
+library(edgeR)
+library(CHBUtils)
+library(pheatmap)
+library(dplyr)
+project_summary = "/Users/rory/cache/danika-singlecell/bcbio-results/project-summary.csv"
+counts_file = "/Users/rory/cache/danika-singlecell/bcbio-results/combined.counts"
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+"#0072B2", "#D55E00", "#CC79A7")
+summarydata = data.frame(read.table(project_summary, header=TRUE, sep=","), row.names="Name", check.rows=FALSE, stringsAsFactors=FALSE)
+summarydata$Name = rownames(summarydata)
+summarydata = summarydata[order(summarydata$Name),]
+counts = read.table(counts_file, header=TRUE, row.names="id", check.names=FALSE)
+counts = counts[, order(colnames(counts))]
+colnames(counts) = gsub(".counts", "", colnames(counts))
+# this is a list of all non user-supplied metadata columns that could appear
+known_columns = c("Name", "X.GC", "Exonic.Rate", "Sequences.flagged.as.poor.quality",
+    "rRNA.rate", "Fragment.Length.Mean", "Intronic.Rate", "Intergenic.Rate",
+    "Mapping.Rate", "Quality.format", "Duplication.Rate.of.Mapped", "Mapped",
+    "rRNA", "Sequence.length", "Transcripts.Detected", "Mean.Per.Base.Cov.",
+    "Genes.Detected", "Unique.Starts.Per.Read", "unique_starts_per_read",
+    "complexity", "X5.3.bias")
+summarydata$Genes.Detected = colSums(counts > 0)
+```
+
+```{r make-conversions}
+library(biomaRt)
+mouse = useMart("ensembl", dataset="mmusculus_gene_ensembl")
+conversions = getBM(attributes=c("ensembl_gene_id", "mgi_symbol"), mart=mouse)
+```
+
+```{r heatmap-function}
+get_heatmap_fn = function(summarydata) {
+    # return the pheatmap function with or without metadata
+    metadata = summarydata[, c("Mapped", "sampletype", "Genes.Detected")]
+    metadata$Mapped = log(metadata$Mapped + 1)
+    metadata$Genes.Detected = log(metadata$Genes.Detected + 1)
+    if(ncol(metadata) == 0) {
+       return(pheatmap)
+    }
+    else {
+    # rownames(metadata) = summarydata$Name
+    heatmap_fn = function(data, ...) {
+        pheatmap(data, annotation=metadata, ...)
+    }
+    return(heatmap_fn)
+}}
+heatmap_fn = get_heatmap_fn(summarydata)
+```
+
+# Quality control metrics
+There is wild variation in the number of mapped reads per cell, with some cells
+having a very poor number of reads mapped and others with several million reads
+mapped.
+
+## Mapped reads
+```{r mapped-plot}
+ggplot(summarydata, aes(x=Name, y=Mapped)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") +
+    ylab("mapped reads") + xlab("")
+```
+
+Only 82 cells have > 1 million reads mapped and 107 have > 500k reads mapped,
+sorting and replotting shows this more clearly.
+
+
+```{r mapped-plot-sorted}
+z = summarydata[order(summarydata$Mapped),]
+z$Name = factor(z$Name, levels=z$Name)
+ggplot(z, aes(x=factor(Name), y=Mapped)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") +
+    ylab("mapped reads") + xlab("")
+```
+These are reads mapped, not
+reads mapping to genes. If we look at the total reads mapping to genes in
+each sample, the counts are even lower:
+
+```{r gene-counts}
+summarydata$total_counts = colSums(counts)
+ggplot(summarydata, aes(x=Name, y=total_counts)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") +
+    ylab("reads mapping to genes") + xlab("")
+```
+
+
+We can see as similar distribution in the mapping rate:
+
+## Genomic mapping rate
+```{r mapping-rate-plot}
+ggplot(summarydata, aes(x=Name, y=Mapping.Rate)) +
+    geom_bar(stat="identity") +
+    ylab("mapping rate") + xlab("") +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90))
+```
+
+
+## Number of genes detected
+About half of the cells look like failures, this leads to a small number of
+genes detected for many of the cells.
+```{r genes-detected-plot}
+dd = data.frame(Name=names(counts), Genes.Detected = colSums(counts > 0))
+ggplot(dd, aes(x=Name, y=Genes.Detected)) +
+    geom_bar(stat="identity") +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("genes detected") + xlab("")
+```
+
+## Gene detection saturation
+The gene detection saturation should look more like a asymptotic curve, but it
+doesn't. There is a small cluster of cells near the origin that look like
+failures, which is expected, but there are many cells with a small number of
+reads mapped in the samples.
+
+```{r saturation-plot}
+dd = data.frame(Mapped=summarydata$Mapped, Genes.Detected = colSums(counts > 0))
+ggplot(dd, aes(x=Mapped, y=Genes.Detected)) +
+    geom_point() +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("genes detected") + xlab("reads mapped")
+```
+
+## Exonic mapping rate
+The exonic mapping rate is lower than we would normally expect as well.
+
+```{r exonic-mapping-plot}
+ggplot(summarydata, aes(x=Name, y=Exonic.Rate)) +
+    geom_bar(stat="identity") +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("exonic mapping rate") + xlab("")
+```
+
+## ERCC problems
+
+So all of the evidence above shows that something went wrong with
+either the library preparation or the RNA extraction. We talked over
+email and it turns out there is a huge amount of ERCC spike in in these
+cells.
+
+
+```{r load-ercc}
+ercc = read.table("../ercc/danika-ercc.txt", header=FALSE, sep="\t",
+                  stringsAsFactors=FALSE)
+colnames(ercc) = c("spike", "length", "mapped", "unmapped", "sample")
+ercc$spike[ercc$spike == "*"] = "unmapped"
+ercc = ercc %>% left_join(summarydata, by=c("sample"="Name"))
+
+ercc_mapped = ercc %>% filter(spike != "unmapped") %>% group_by(sample) %>%
+                       summarize(ercc_mapped=sum(mapped+unmapped))
+ercc_mapped = ercc %>% filter(spike == "unmapped") %>% group_by(sample) %>%
+                       summarize(ercc_unmapped=sum(mapped + unmapped)) %>%
+                       left_join(ercc_mapped, by="sample") %>%
+  left_join(summarydata, by=c("sample"="Name"))
+```
+Here we can see there are many cells where most of the reads are spike-in.
+
+```{r ercc-plots-percent-spike-in}
+ggplot(ercc_mapped, aes(sample, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
+    geom_point()  +
+    theme_bw(base_size=10) +
+    xlab("sample") +
+    ylab("percent spike-in") +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_blank())
+```
+Cells that are mostly spike-in sequence tend to have a low number of
+alignments to the genome
+```{r ercc-spike-ins-no-genomic}
+ggplot(ercc_mapped, aes(Mapped, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
+    geom_point()  +
+    theme_bw(base_size=10) +
+    xlab("alignments aligned to genome") +
+    ylab("percent alignments to spike-in") +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"))
+```
+This probably explains the low mapping rate of many of the samples, the sequences
+were mostly spike-in.
+```{r mapping-rate-decrease}
+ggplot(ercc_mapped, aes(Mapping.Rate, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
+    geom_point()  +
+    theme_bw(base_size=10) +
+    xlab("proportion of alignments to genome") +
+    ylab("proportion of alignments to spike-in") +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"))
+```
+
+The spikes are mostly EC15 and EC2.
+
+```{r spike-in-identity}
+ggplot(ercc, aes(sample, mapped + unmapped)) + geom_point() + facet_wrap(~ spike) +
+    scale_y_sqrt() +
+    theme_bw(base_size=10) +
+    xlab("sample") +
+    ylab("reads mapped") +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_blank())
+```
+```{r add-in-ercc-summaries}
+ercc_sum = ercc %>% group_by(sample) %>% summarise(ercc_mapped=sum(mapped))
+summarydata = merge(summarydata, ercc_sum, by.x="Name", by.y="sample")
+rownames(summarydata) = summarydata$Name
+```
+We'll add the number of ERCC reads mapped as a variable to look at when plotting
+heatmaps.
+
+```{r heatmap-function-with-ercc}
+get_heatmap_fn = function(summarydata) {
+    # return the pheatmap function with or without metadata
+    metadata = summarydata[, c("Mapped", "sampletype", "Genes.Detected", "ercc_mapped")]
+    metadata$Mapped = log(metadata$Mapped + 1)
+    metadata$Genes.Detected = log(metadata$Genes.Detected + 1)
+    metadata$Genes.Detected = log(metadata$ercc_mapped+ 1)
+    if(ncol(metadata) == 0) {
+       return(pheatmap)
+    }
+    else {
+    # rownames(metadata) = summarydata$Name
+    heatmap_fn = function(data, ...) {
+        pheatmap(data, annotation=metadata, ...)
+    }
+    return(heatmap_fn)
+}}
+heatmap_fn = get_heatmap_fn(summarydata)
+```
+
+## Estimated fragment length of paired-end reads
+The reads are paired end 75 basepair reads, which is a shame because the
+fragment size is estimated to be 50 bases, so the paired end information
+isn't getting used. Something went awry during the library preparation which
+left very small insert sizes.
+
+```{r fragment-length-plot}
+ggplot(summarydata, aes(x=Name, y=Fragment.Length.Mean)) +
+    geom_bar(stat="identity") +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("fragment length") + xlab("")
+```
+
+## Boxplot of log10 counts per gene
+All of the above leads to quite a bit of variability between the cells in the
+number of counts per gene.
+```{r boxplot-raw}
+melted = melt(counts)
+colnames(melted) = c("sample", "count")
+melted$sample = factor(melted$sample)
+melted = melted[order(melted$sample),]
+melted$count = log(melted$count)
+ggplot(melted, aes(x=sample, y=count)) + geom_boxplot() +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) + xlab("")
+```
+
+## Boxplot of log10 TMM-normalized counts per gene
+The variability is not able to be controlled completely by simple normalization.
+
+Trimmed mean of M-values (TMM) normalization is described
+[here](http://genomebiology.com/2010/11/3/R25)
+
+Robinson, M. D., & Oshlack, A. (2010). A scaling normalization method for differential expression analysis of RNA-seq data. Genome Biology, 11(3). doi:10.1186/gb-2010-11-3-r25
+
+```{r boxplot-normalized}
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+normalized_counts = cpm(y, normalized.lib.sizes=TRUE)
+melted = melt(normalized_counts)
+colnames(melted) = c("gene", "sample", "count")
+melted$sample = factor(melted$sample)
+melted = melted[order(melted$sample),]
+melted$count = log(melted$count)
+ggplot(melted, aes(x=sample, y=count)) + geom_boxplot() +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) + xlab("")
+```
+
+## Correlation (Pearson) heatmap of TMM-normalized counts
+We can see some clustering by the number of genes detected and the number
+of reads mapping to the ERCC sequences if we cluster by Pearson correlation.
+
+```{r pearson-heatmap-normalized}
+heatmap_fn(cor(normalized_counts, method="pearson"), fontsize=6)
+```
+
+## Correlation (Spearman) heatmap of TMM-normalized counts
+We see a similar clustering by genes detected in the Spearman correlations
+as well. We can see here that the cells with the huge amount of ERCC
+spike-in tend to be from the young sampletype.
+```{r spearman-heatmap-normalized}
+heatmap_fn(cor(normalized_counts, method="spearman"), fontsize=6)
+```
+
+## PCA of most variant genes
+```{r pca-genes}
+library(DESeq2)
+dds = DESeqDataSetFromMatrix(countData=counts,
+                             colData=summarydata, design=~sampletype)
+geoMeans = apply(counts, 1, function(row) if (all(row == 0)) 0 else exp(mean(log(row[row != 0]))))
+dds = estimateSizeFactors(dds, geoMeans=geoMeans)
+vsd <- varianceStabilizingTransformation(dds)
+distances = assay(vsd)
+```
+
+You can see the spread of the PCA matches the number of genes detected pretty well
+along PC1, so that is something we need to adjust for when clustering the cells.
+
+```{r roll-own-pca}
+pc = prcomp(distances)
+rot = pc$rotation
+rot = merge(rot, summarydata, by="row.names")
+ggplot(data.frame(rot), aes(x=PC1, y=PC2, color=Genes.Detected)) + geom_point() +
+     theme_bw()
+```
+
+## Seurat
+
+```{r seurat}
+library(Seurat)
+scounts = counts
+scounts$id = rownames(scounts)
+scounts = merge(scounts, conversions, by.x="id", by.y="ensembl_gene_id")
+scounts = scounts[!duplicated(scounts$mgi_symbol),]
+rownames(scounts) = scounts$mgi_symbol
+scounts$mgi_symbol = NULL
+scounts$ensmbl_gene_id = NULL
+scounts$id = NULL
+scounts = scounts[rowSums(scounts > 0) > 10,]
+keep = colSums(scounts) > 10000
+scounts = scounts[, keep]
+ssummarydata = ssummarydata[keep,]
+nbd.data = new("seurat", raw.data=log(scounts + 1))
+nbt = Seurat:::setup(nbd.data, project="NBT", min.cells=10, min.genes=1000,
+   names.delim="_", names.field=1, is.expr=1)
+save(nbt, file="nbt.RData")
+```
+
+```{r mean-var-plot}
+nbt = mean.var.plot(nbt, y.cutoff=2, x.low.cutoff=2, fxn.x=expMean,
+                    fxn.y=logVarDivMean)
+```
+
+PCA from Seurat takes the varying mapping rates into account, you can
+see here that the young and old cells are pretty similar once we do that.
+
+```{r seurat-pca}
+nbt=pca(nbt,do.print=FALSE)
+pca.plot(nbt,1,2,pt.size = 2)
+pca.plot(nbt,3,4,pt.size = 2)
+pca.plot(nbt,5,6,pt.size = 2)
+```
+
+```{r tsna-pca-doesnt-help}
+nbt=run_tsne(nbt,dims.use = 1:11,max_iter=2000)
+tsne.plot(nbt,pt.size = 1)
+```
+
+There doesn't look to be really any difference between the
+old and young cells.
+
+## Completely naive SCDE
+```{r clean-data, eval=!file.exists("cleaned.RData")}
+counts = counts[rowSums(counts) > 0,]
+counts = counts[, colSums(counts) > 1e4]
+summarydata = summarydata[colnames(counts),]
+save(counts, summarydata, file="cleaned.RData")
+```
+
+```{r naive-scde, eval=!file.exists("ediff.RData")}
+load("cleaned.RData")
+library(scde)
+n.cores=2
+o.ifm <- scde.error.models(counts=counts,groups=summarydata$sampletype,n.cores=n.cores,threshold.segmentation=T,save.crossfit.plots=F,save.model.plots=F,verbose=1);
+
+valid.cells <- o.ifm$corr.a >0;
+o.ifm <- o.ifm[valid.cells,];
+o.prior <- scde.expression.prior(models=o.ifm,counts=counts,length.out=400,show.plot=F)
+groups = as.factor(as.character(summarydata$sampletype))
+names(groups) = rownames(summarydata)
+ediff <- scde.expression.difference(o.ifm,counts,o.prior,groups=groups,n.randomizations=100,n.cores=n.cores,verbose=1)
+ediff$pvalue = pnorm(-(abs(ediff$Z))) * 2
+ediff$padj = p.adjust(ediff$pvalue)
+save(ediff, file="ediff.RData")
+```
+
+We do find some differences with this, but I don't believe it:
+
+```{r naive-differences, results='asis'}
+load("ediff.RData")
+matches = match(rownames(ediff), conversions$ensembl_gene_id)
+ediff$symbol = conversions$mgi_symbol[matches]
+knitr::kable(subset(ediff, padj < 0.1))
+```
+
+## Marker genes
+We'll look at sets of marker genes and see if we can pick out any differences.
+Here we make heatmaps of the scaled (after z-scoring each gene) expression of
+marker genes for each sample.
+
+```{r housekeeping-heatmap}
+housekeeping = c("Atxn1", "Kit", "Angpt1", "Icam5")
+negative = c("Ly6g", "Klrb1c", "Cd48", "Cd3e", "Cd19", "Ly76", "Itgam",
+             "Cd244", "Cd34", "Cd38", "Flt3")
+positive = c("Atxn1", "Kit", "Angpt1", "Slamf1", "Cxcr4", "Myc", "Ptprc")
+possible_up_in_young = c("Selp", "Bmp4", "Zbtb7a")
+anno_df <-  data.frame(marker=c(rep("negative", length(negative)),
+                                rep("positive", length(positive)),
+                                rep("young_up", length(possible_up_in_young))))
+rownames(anno_df) <- c(negative, positive, possible_up_in_young)
+seuratscaled = nbt@scale.data
+metadata = summarydata[, c("Mapped", "sampletype", "Genes.Detected")]
+for_heatmap <- seuratscaled[rownames(seuratscaled) %in% rownames(anno_df),]
+for_heatmap_anno <- subset(anno_df, rownames(anno_df) %in% rownames(for_heatmap))
+pheatmap(for_heatmap[rownames(for_heatmap_anno),],
+         annotation_row=for_heatmap_anno, show_colnames=FALSE,
+         cluster_rows=FALSE, fontsize=8, annotation_col=metadata)
+```
+
+These cells don't cluster very well. It doesn't help that the young cells tend
+to have a lower number of genes detected.
+
+Using the non-scaled data and just looking at log expression values:
+
+```{r pheatmap-expression}
+seuratexpr = nbt@data
+metadata = summarydata[, c("Mapped", "sampletype", "Genes.Detected")]
+for_heatmap <- seuratexpr[rownames(seuratexpr) %in% rownames(anno_df),]
+for_heatmap_anno <- subset(anno_df, rownames(anno_df) %in% rownames(for_heatmap))
+pheatmap(for_heatmap[rownames(for_heatmap_anno),],
+         annotation_row=for_heatmap_anno, show_colnames=FALSE,
+         cluster_rows=FALSE, fontsize=8, annotation_col=metadata)
+```
+
+There could possibly be some subgroups here.
+
+## subgroups
+
+I had sent along this image:
+[](../images/heatmap-counts-markers.png)
+
+Which is a heatmap of the log normalized counts of marker genes in a small set
+of the cells.
+
+This is our deduction of the data:
+1) In agreement with your interpretation - there are 4 major cell types here, first broadly into Slamf1 + and - of each of these, they are either CD38 + or -. The two that we can confirm (Slamf1 +/CD38+ are probably ST-HSCs; the Slamf1+/CD38- are probably LT-HSC). The other two cell types that are Slamf1-, I am not sure but I think they are more downstream progenitors - Danika please confirm.
+
+I don't agree there are four major cell types here,
+
+2) Focusing a little more on the LT-HSC (Slamf1+), I think we can further break them up into 3 clusters, with the following profiles: Cluster 1 cMyc+/Selp+/zbtb7a low/cxcr4 low; Cluster2 cmyc-/selp+,zbtb7a-,cxcr4-; cluster 3 cmyc-, selfp-, zbtb7a low/cxcr4 low. From these, I believe cluster 3 are the more primitive HSC (i’m assuming a lot of things here, but mainly I just have a gut feeling).
+
+I am interested in cluster 3 of the LT-HSC compartment to see if there was any difference between the young and the aged cells. I was not very clear on where these ~50 cells were from (young or aged?).
+
+Basically - can we start with dissecting the Slamf1+ group of cells - how many cells do we have here and how do they cluster?
+
+## simple HSC classifier
+Maybe there are populations of cells within the groups that are a big blob
+on the PCA.
+
+From Danika:
+
+> I would most likely use this hierarchy for narrowing cells down to HSCs:
+>
+> Ptprc,+
+> Kit,+
+> Atxn1,+
+> Cd34,-
+> Flt3,-
+> Slamf1,+
+
+So we created a very simple classifier that gives a positive score for the genes
+we expect to be expressed and a negative score for any genes that we don't
+expect to see expressed.
+
+```{r simple-hsc-classifier}
+scounts = nbt@data
+important = c("Slamf1")
+positive_known = c("Ptprc", "Kit", "Atxn1")
+negative_known = c("Cd34", "Flt3")
+scores = colSums(scounts[c(positive_known, important),])
+possible_hscs = scores > 5
+for_heatmap <- possible_hscs[rownames(possible_hscs) %in% rownames(anno_df),]
+for_heatmap_anno <- subset(anno_df, rownames(anno_df) %in% rownames(for_heatmap))
+pheatmap(log(for_heatmap[rownames(for_heatmap_anno),] + 1),
+         annotation_row=for_heatmap_anno, show_colnames=FALSE,
+         cluster_rows=FALSE, fontsize=8, cluster_columns=FALSE)
+```
+
+## Now we will do differential expression between the young/old groups in this
+## group of possible HSC cells.
+
+## ```{r scde-possible-hscs}
+## library(scde)
+## n.cores=2
+## possible_hsc_counts = counts[, colnames(possible_hscs)]
+## possible_hsc_counts = possible_hsc_counts[rowSums(possible_hsc_counts > 0) > 0.1*ncol(possible_hsc_counts),]
+## groups = factor(as.factor(summarydata[colnames(possible_hsc_counts),]$sampletype))
+## names(groups) = rownames(summarydata[colnames(possible_hsc_counts),])
+## o.ifm <- scde.error.models(counts=possible_hsc_counts,groups=groups,n.cores=n.cores,threshold.segmentation=T,save.crossfit.plots=F,save.model.plots=F,verbose=1);
+## valid.cells <- o.ifm$corr.a >0;
+## o.ifm <- o.ifm[valid.cells,];
+## o.prior <- scde.expression.prior(models=o.ifm,counts=possible_hsc_counts,length.out=400,show.plot=F)
+## ediff <- scde.expression.difference(o.ifm,possible_hsc_counts,o.prior,groups=groups,n.randomizations=100,n.cores=n.cores,verbose=1)
+## ediff$pvalue = pnorm(-(abs(ediff$Z))) * 2
+## ediff$padj = p.adjust(ediff$pvalue)
+## ediff = ediff[order(abs(ediff$Z),decreasing=T),]
+## ediff$symbol = conversion[match(rownames(ediff), conversion$ensembl_gene_id),"mgi_symbol"]
+## write.table(ediff, file="possible_hsc_scde_de.txt", col.names=TRUE, quote=FALSE, row.names=TRUE)
+## ```
+
+## ```{r scde-definite-hscs}
+## library(scde)
+## n.cores=2
+## definite_hscs = possible_hscs[,possible_hscs["Slamf1",] > 0 & possible_hscs["Cd48",] == 0]
+## definite_hsc_counts = counts[, colnames(definite_hscs)]
+## definite_hsc_counts = definite_hsc_counts[rowSums(definite_hsc_counts > 0) > 0.1*ncol(definite_hsc_counts),]
+## groups = factor(as.factor(summarydata[colnames(definite_hsc_counts),]$sampletype))
+## names(groups) = rownames(summarydata[colnames(definite_hsc_counts),])
+## o.ifm <- scde.error.models(counts=definite_hsc_counts,groups=groups,n.cores=n.cores,threshold.segmentation=T,save.crossfit.plots=F,save.model.plots=F,verbose=1);
+## valid.cells <- o.ifm$corr.a >0;
+## o.ifm <- o.ifm[valid.cells,];
+## o.prior <- scde.expression.prior(models=o.ifm,counts=definite_hsc_counts,length.out=400,show.plot=F)
+## ediff <- scde.expression.difference(o.ifm,definite_hsc_counts,o.prior,groups=groups,n.randomizations=100,n.cores=n.cores,verbose=1)
+## ediff$pvalue = pnorm(-(abs(ediff$Z))) * 2
+## ediff$padj = p.adjust(ediff$pvalue)
+## ediff = ediff[order(abs(ediff$Z),decreasing=T),]
+## ediff$symbol = conversion[match(rownames(ediff), conversion$ensembl_gene_id),"mgi_symbol"]
+## write.table(ediff, file="definite_hsc_scde_de.txt", col.names=TRUE, quote=FALSE, row.names=TRUE)
+## ```
+
+## Need some way to try to classify bad cells, cells that
+## didn't work and other outliers. Also need some way to clean bad genes as well.
+
+## total_reads = colSums(counts)
+## detected = colSums(counts > 0)
+## qplot(total_reads, detected)
+
+## qplot(detected / total_reads) + scale_x_log10()
+
+
+## qplot(summarydata$Mapped, summarydata$Mapping.Rate, size=summarydata$Genes.Detected)
+
+## dim(summarydata)
+## dim(subset(summarydata, Genes.Detected > 1000))
