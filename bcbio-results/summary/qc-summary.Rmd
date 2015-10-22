@@ -474,113 +474,166 @@ pheatmap(for_heatmap[rownames(for_heatmap_anno),],
          cluster_rows=FALSE, fontsize=8, annotation_col=metadata)
 ```
 
-There could possibly be some subgroups here.
+These don't look very good. There are maybe some differences. A few cells are
+Slamf1+. There is a set that seem like they might be Ptprc- or positive. But
+really these are pretty not convincing.
 
 ## subgroups
 
-I had sent along this image:
-[](../images/heatmap-counts-markers.png)
+I had sent along this image, which is a pared down heatmap of the above. The
+cells are very stringently filtered.
 
-Which is a heatmap of the log normalized counts of marker genes in a small set
-of the cells.
+[](../images/heatmap-counts-markers.png)
 
 This is our deduction of the data:
 1) In agreement with your interpretation - there are 4 major cell types here, first broadly into Slamf1 + and - of each of these, they are either CD38 + or -. The two that we can confirm (Slamf1 +/CD38+ are probably ST-HSCs; the Slamf1+/CD38- are probably LT-HSC). The other two cell types that are Slamf1-, I am not sure but I think they are more downstream progenitors - Danika please confirm.
 
-I don't agree there are four major cell types here,
-
 2) Focusing a little more on the LT-HSC (Slamf1+), I think we can further break them up into 3 clusters, with the following profiles: Cluster 1 cMyc+/Selp+/zbtb7a low/cxcr4 low; Cluster2 cmyc-/selp+,zbtb7a-,cxcr4-; cluster 3 cmyc-, selfp-, zbtb7a low/cxcr4 low. From these, I believe cluster 3 are the more primitive HSC (i’m assuming a lot of things here, but mainly I just have a gut feeling).
+
 
 I am interested in cluster 3 of the LT-HSC compartment to see if there was any difference between the young and the aged cells. I was not very clear on where these ~50 cells were from (young or aged?).
 
 Basically - can we start with dissecting the Slamf1+ group of cells - how many cells do we have here and how do they cluster?
 
-## simple HSC classifier
-Maybe there are populations of cells within the groups that are a big blob
-on the PCA.
+## Slamf1+ dissection
+There are very few cells that are Slamf1+, and very few young cells that are
+Slamf1+. This is due to the fact that many of the young cells were also cells
+with a high amount of ERCC spike in.
 
-From Danika:
-
-> I would most likely use this hierarchy for narrowing cells down to HSCs:
->
-> Ptprc,+
-> Kit,+
-> Atxn1,+
-> Cd34,-
-> Flt3,-
-> Slamf1,+
-
-So we created a very simple classifier that gives a positive score for the genes
-we expect to be expressed and a negative score for any genes that we don't
-expect to see expressed.
-
-```{r simple-hsc-classifier}
-scounts = nbt@data
-important = c("Slamf1")
-positive_known = c("Ptprc", "Kit", "Atxn1")
-negative_known = c("Cd34", "Flt3")
-scores = colSums(scounts[c(positive_known, important),])
-possible_hscs = scores > 5
-for_heatmap <- possible_hscs[rownames(possible_hscs) %in% rownames(anno_df),]
-for_heatmap_anno <- subset(anno_df, rownames(anno_df) %in% rownames(for_heatmap))
-pheatmap(log(for_heatmap[rownames(for_heatmap_anno),] + 1),
-         annotation_row=for_heatmap_anno, show_colnames=FALSE,
-         cluster_rows=FALSE, fontsize=8, cluster_columns=FALSE)
+```{r slamf1-distribution}
+slamf1 = t(scounts["Slamf1",])
+slamf1 = merge(summarydata, slamf1, by="row.names")
+ggplot(slamf1, aes(Slamf1, fill=sampletype)) + geom_histogram() +
+  facet_wrap(~ sampletype) + theme_bw()
+slampos = scounts[,scounts["Slamf1",] > 0]
 ```
 
-## Now we will do differential expression between the young/old groups in this
-## group of possible HSC cells.
+Only `r ncol(slampos)` cells are Slamf1+ and of those
+`r sum(grepl("Young", colnames(slampos)))` are young. Doing the more complicated
+breakdown into three clusters and comparing isn't going to work because there
+isn't enough cells to do the comparisons.
 
-## ```{r scde-possible-hscs}
-## library(scde)
-## n.cores=2
-## possible_hsc_counts = counts[, colnames(possible_hscs)]
-## possible_hsc_counts = possible_hsc_counts[rowSums(possible_hsc_counts > 0) > 0.1*ncol(possible_hsc_counts),]
-## groups = factor(as.factor(summarydata[colnames(possible_hsc_counts),]$sampletype))
-## names(groups) = rownames(summarydata[colnames(possible_hsc_counts),])
-## o.ifm <- scde.error.models(counts=possible_hsc_counts,groups=groups,n.cores=n.cores,threshold.segmentation=T,save.crossfit.plots=F,save.model.plots=F,verbose=1);
-## valid.cells <- o.ifm$corr.a >0;
-## o.ifm <- o.ifm[valid.cells,];
-## o.prior <- scde.expression.prior(models=o.ifm,counts=possible_hsc_counts,length.out=400,show.plot=F)
-## ediff <- scde.expression.difference(o.ifm,possible_hsc_counts,o.prior,groups=groups,n.randomizations=100,n.cores=n.cores,verbose=1)
-## ediff$pvalue = pnorm(-(abs(ediff$Z))) * 2
-## ediff$padj = p.adjust(ediff$pvalue)
-## ediff = ediff[order(abs(ediff$Z),decreasing=T),]
-## ediff$symbol = conversion[match(rownames(ediff), conversion$ensembl_gene_id),"mgi_symbol"]
-## write.table(ediff, file="possible_hsc_scde_de.txt", col.names=TRUE, quote=FALSE, row.names=TRUE)
-## ```
+```{r seurat-slamf1+-only}
+slamf1counts = scounts[, colnames(slampos)]
+slamf1sd = summarydata[colnames(slamf1counts),]
+slamf1.data = new("seurat", raw.data=slamf1counts)
+nbt = Seurat:::setup(slamf1.data, project="danika", min.cells=10, min.genes=1000,
+   names.delim="_", names.field=1, is.expr=1)
+```
 
-## ```{r scde-definite-hscs}
-## library(scde)
-## n.cores=2
-## definite_hscs = possible_hscs[,possible_hscs["Slamf1",] > 0 & possible_hscs["Cd48",] == 0]
-## definite_hsc_counts = counts[, colnames(definite_hscs)]
-## definite_hsc_counts = definite_hsc_counts[rowSums(definite_hsc_counts > 0) > 0.1*ncol(definite_hsc_counts),]
-## groups = factor(as.factor(summarydata[colnames(definite_hsc_counts),]$sampletype))
-## names(groups) = rownames(summarydata[colnames(definite_hsc_counts),])
-## o.ifm <- scde.error.models(counts=definite_hsc_counts,groups=groups,n.cores=n.cores,threshold.segmentation=T,save.crossfit.plots=F,save.model.plots=F,verbose=1);
-## valid.cells <- o.ifm$corr.a >0;
-## o.ifm <- o.ifm[valid.cells,];
-## o.prior <- scde.expression.prior(models=o.ifm,counts=definite_hsc_counts,length.out=400,show.plot=F)
-## ediff <- scde.expression.difference(o.ifm,definite_hsc_counts,o.prior,groups=groups,n.randomizations=100,n.cores=n.cores,verbose=1)
-## ediff$pvalue = pnorm(-(abs(ediff$Z))) * 2
-## ediff$padj = p.adjust(ediff$pvalue)
-## ediff = ediff[order(abs(ediff$Z),decreasing=T),]
-## ediff$symbol = conversion[match(rownames(ediff), conversion$ensembl_gene_id),"mgi_symbol"]
-## write.table(ediff, file="definite_hsc_scde_de.txt", col.names=TRUE, quote=FALSE, row.names=TRUE)
-## ```
+```{r mean-var-plot-slamf1}
+nbt = mean.var.plot(nbt, y.cutoff=2, x.low.cutoff=2, fxn.x=expMean,
+                    fxn.y=logVarDivMean)
+```
 
-## Need some way to try to classify bad cells, cells that
-## didn't work and other outliers. Also need some way to clean bad genes as well.
+If we do PCA of just these cells you can see there doesn't really look like
+there is a systematic difference between the young and old HSCs. There
+are some wild young HSCs off on their own though.
 
-## total_reads = colSums(counts)
-## detected = colSums(counts > 0)
-## qplot(total_reads, detected)
+```{r seurat-pca-slamf1}
+nbt=pca(nbt,do.print=FALSE)
+pca.plot(nbt,1,2,pt.size = 2)
+pca.plot(nbt,3,4,pt.size = 2)
+```
 
-## qplot(detected / total_reads) + scale_x_log10()
+There's maybe some separation along component 3, but it isn't too convincing.
+Here is a heatmap which have the genes with the highest loadings in PC1-PC3.
+It is not too convincing, you can see there are a couple outlier cells and
+the rest of the cells the variation is driven by a couple cells.
 
+```{r slamf1-third-component}
+z = nbt@pca.x
+pc1l = head(z[order(-abs(z$PC1)), "PC1", drop=FALSE], 20)
+pc2l = head(z[order(-abs(z$PC2)), "PC2", drop=FALSE], 20)
+pc3l = head(z[order(-abs(z$PC3)), "PC3", drop=FALSE], 20)
+to_plot = unique(c(rownames(pc1l, pc2l, pc3l)))
+zexpr = nbt@data
+metadata = summarydata[, c("Mapped", "sampletype", "Genes.Detected")]
+pheatmap(zexpr[to_plot,],
+         show_colnames=FALSE,
+         cluster_rows=FALSE, fontsize=8, annotation_col=metadata)
+```
 
-## qplot(summarydata$Mapped, summarydata$Mapping.Rate, size=summarydata$Genes.Detected)
+## wrap up and thoughts
+We can't do very much with this dataset-- to do this type of subpopulation
+analysis we need either a lot of cells or a smaller set of cells with solid
+sequence data. Here we kind of have the worst of both worlds. We can see the
+problem because even genes that we sorted on are not reproducibly recovered
+from the single-cell data.
 
-## dim(summarydata)
-## dim(subset(summarydata, Genes.Detected > 1000))
+Just to demonstrate what a more robust dataset looks like, we'll look at the
+[Pollen](http://www.nature.com/nbt/journal/v32/n10/abs/nbt.2967.html) dataset.
+
+```{r pollen-dataset}
+library(scde)
+data(pollen)
+pollen = pollen[, colSums(pollen > 0)>2000]
+pollen = pollen[rowSums(pollen) > 10,]
+pollen = pollen[rowSums(pollen > 0) > 5,]
+pollen.data = data.frame(log(pollen + 1))
+pollen.data = pollen.data[, order(colnames(pollen.data))]
+x = paste("GW16", 1:25, sep="_")
+x = c(x, paste("GW21", 26:49, sep="_"))
+x = c(x, paste("NPC", 50:64, sep="_"))
+colnames(pollen.data) = x
+pollen.seurat = new("seurat", raw.data=pollen.data)
+pollen.analysis = Seurat:::setup(pollen.seurat, project="Pollen", min.cells=10,
+min.genes=1000, names.delim="_", names.field=1, is.expr=1)
+pollen.analysis = mean.var.plot(pollen.analysis, y.cutoff=2, x.low.cutoff=2,
+   fxn.x=expMean, fxn.y=logVarDivMean)
+pollen=pca(pollen.analysis, do.print=FALSE)
+pca.plot(pollen, 1, 2, pt.size=2)
+pca.plot(pollen, 3, 4, pt.size=2)
+```
+
+You can see by eyeballing the PCA plot that there is likely to be some separation
+along PC1 and PC2 for the three groups of cells. The Pollen cells have many more
+reads assigned to genes, and less cells with a very small number of reads:
+
+```{r pollen-vs-hsc-counts}
+df = data.frame(counts=colSums(pollen), detected=colSums(pollen > 0))
+df$name = rownames(df)
+df$experiment = "pollen"
+df2 = data.frame(counts=colSums(counts), detected=colSums(counts > 0))
+df2$name = rownames(df2)
+df2$experiment = "hsc"
+df = rbind(df, df2)
+ggplot(df, aes(experiment, counts)) + geom_violin() +
+  theme_bw()
+```
+More importantly the Pollen cells have more genes detected than our
+dataset. There are on average 4.5k genes detected in the Pollen dataset
+vs 2700 in our dataset.
+
+```{r pollen-vs-hsc-detected}
+ggplot(df, aes(experiment, detected)) + geom_violin() +
+  theme_bw()
+```
+
+You can see from the reproduction of the gene saturation plot below that
+we top out at around 4k genes detected, no matter how many reads map.
+There is a group of cells that have around 1 million reads mapped with
+5000 genes detected. Those are cells that the protocol probably worked
+well.
+
+```{r saturation-plot}
+dd = data.frame(Mapped=summarydata$Mapped, Genes.Detected = colSums(counts > 0))
+ggplot(dd, aes(x=Mapped, y=Genes.Detected)) +
+    geom_point() +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("genes detected") + xlab("reads mapped")
+```
+
+If we were looking at different cell types we could maybe get away with the
+data as it is. Different cell types would mean very large gene expression
+changes that we could maybe pick out. Here we are looking for a more subtle
+signal, if any exists at all, and we don't have enough data to pick it out.
+
+I think for doing subtle analysis like this repeating the experiment and
+resequencing it isn't going to help; for subtle subpopulations it is likely
+you are going to need thousands of cells. There have been a couple nice papers
+out on DropSeq, which is a similar method to SCRB-seq, where you sequence very
+shallowly but sequence tens of thousands of cells. That type of experiment
+might be more appropriate for these cells.
