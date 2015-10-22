@@ -13,12 +13,12 @@ knitr::opts_chunk$set(tidy=TRUE, highlight=TRUE, dev="png",
 
 ## Overview
 
-This is the output from
-Danika's single cell run. There are two sets of HSC cells, young and old, along with some pooled samples of 10 and 1,000 cells for each condition to compare to. There is a positive control, but I'm
-not sure what it is.
+This is the output from Danika's single cell run using the SMART-seq protocol.
+There are two sets of HSC cells, young and old, along with some pooled samples
+of 10 and 1,000 cells for each condition to compare to. There is a positive
+control, but I'm not exactly sure what it is.
 
-The reads are paired end, 75bp reads. The library is not great for this though,
-since the average insert size is only 50 bp.
+The reads are paired end, 75bp reads.
 
 
 ```{r qc-setup}
@@ -90,8 +90,8 @@ ggplot(summarydata, aes(x=Name, y=Mapped)) +
 ```
 
 Only 82 cells have > 1 million reads mapped and 107 have > 500k reads mapped,
-sorting and replotting shows this more clearly.
-
+sorting and replotting shows this more clearly. These aren't reads mapping
+to genes, this is reads mapping to the genome at all.
 
 ```{r mapped-plot-sorted}
 z = summarydata[order(summarydata$Mapped),]
@@ -103,9 +103,9 @@ ggplot(z, aes(x=factor(Name), y=Mapped)) +
     geom_bar(stat="identity") +
     ylab("mapped reads") + xlab("")
 ```
-These are reads mapped, not
-reads mapping to genes. If we look at the total reads mapping to genes in
-each sample, the counts are even lower:
+
+If we look at the total reads mapping to genes in each sample, the counts are
+even lower:
 
 ```{r gene-counts}
 summarydata$total_counts = colSums(counts)
@@ -117,8 +117,9 @@ ggplot(summarydata, aes(x=Name, y=total_counts)) +
     ylab("reads mapping to genes") + xlab("")
 ```
 
-
-We can see as similar distribution in the mapping rate:
+Below we can see that the mapping rate for some samples is horrendous, and
+for most samples it is below par. We'd usually be expecting about 80-90% of
+the reads to align to the genome.
 
 ## Genomic mapping rate
 ```{r mapping-rate-plot}
@@ -130,6 +131,10 @@ ggplot(summarydata, aes(x=Name, y=Mapping.Rate)) +
           axis.text.x = element_text(angle=90))
 ```
 
+This isn't the end of the world, there have been some papers that show that you
+can pick out large changes with a small (50-100k) number of reads. The key is
+that the complexity of the library also needs to be strong. One measure of the
+complexity of the library is looking at how many genes are expressed.
 
 ## Number of genes detected
 About half of the cells look like failures, this leads to a small number of
@@ -144,32 +149,32 @@ ggplot(dd, aes(x=Name, y=Genes.Detected)) +
     ylab("genes detected") + xlab("")
 ```
 
+Although we sequenced deeply, there are a small number of genes that are picked up.
+Here we find only around ~2k genes for most samples. That is a very small amount.
+
 ## Gene detection saturation
-The gene detection saturation should look more like a asymptotic curve, but it
-doesn't. There is a small cluster of cells near the origin that look like
-failures, which is expected, but there are many cells with a small number of
-reads mapped in the samples.
+One reason why the gene detection could top out is we are not sequencing deeply
+enough. Below we make a plot of the number of genes detected vs the number of
+reads mapped. We can see that we top out at around 4000 genes, no matter how
+deep we sequence. There are also a small set of cells that have much lower
+sequencing and a high number of genes detected. Those are cells where the
+RNA-extraction and library preparation worked well. We can see they are all
+almost exclusively in the old sampletype.
+
+The young cells look poor-- we can see three groups. One group of high depth,
+low complexity samples on the right. A group of low depth low complexity
+samples on the left and a group of medium depth low complexity samples on
+the right.
 
 ```{r saturation-plot}
-dd = data.frame(Mapped=summarydata$Mapped, Genes.Detected = colSums(counts > 0))
-ggplot(dd, aes(x=Mapped, y=Genes.Detected)) +
+dd = data.frame(Mapped=summarydata$Mapped, Genes.Detected = colSums(counts > 0),
+                sampletype=summarydata$sampletype)
+ggplot(dd, aes(x=Mapped, y=Genes.Detected, color=sampletype)) +
     geom_point() +
     theme_bw(base_size=10) +
     theme(panel.grid.major = element_line(size = .5, color = "grey"),
           axis.text.x = element_text(angle=90)) +
     ylab("genes detected") + xlab("reads mapped")
-```
-
-## Exonic mapping rate
-The exonic mapping rate is lower than we would normally expect as well.
-
-```{r exonic-mapping-plot}
-ggplot(summarydata, aes(x=Name, y=Exonic.Rate)) +
-    geom_bar(stat="identity") +
-    theme_bw(base_size=10) +
-    theme(panel.grid.major = element_line(size = .5, color = "grey"),
-          axis.text.x = element_text(angle=90)) +
-    ylab("exonic mapping rate") + xlab("")
 ```
 
 ## ERCC problems
@@ -178,7 +183,6 @@ So all of the evidence above shows that something went wrong with
 either the library preparation or the RNA extraction. We talked over
 email and it turns out there is a huge amount of ERCC spike in in these
 cells.
-
 
 ```{r load-ercc}
 ercc = read.table("../ercc/danika-ercc.txt", header=FALSE, sep="\t",
@@ -195,9 +199,11 @@ ercc_mapped = ercc %>% filter(spike == "unmapped") %>% group_by(sample) %>%
   left_join(summarydata, by=c("sample"="Name"))
 ```
 Here we can see there are many cells where most of the reads are spike-in.
+The young cells are disproportionately affected by the spike-in contamination.
 
 ```{r ercc-plots-percent-spike-in}
-ggplot(ercc_mapped, aes(sample, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
+ggplot(ercc_mapped, aes(sample, ercc_mapped / (ercc_mapped + ercc_unmapped),
+       color=sampletype)) +
     geom_point()  +
     theme_bw(base_size=10) +
     xlab("sample") +
@@ -206,9 +212,12 @@ ggplot(ercc_mapped, aes(sample, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
           axis.text.x = element_blank())
 ```
 Cells that are mostly spike-in sequence tend to have a low number of
-alignments to the genome
+alignments to the genome, again these are the young cells that are most
+affected:
+
 ```{r ercc-spike-ins-no-genomic}
-ggplot(ercc_mapped, aes(Mapped, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
+ggplot(ercc_mapped, aes(Mapped, ercc_mapped / (ercc_mapped + ercc_unmapped),
+       color=sampletype)) +
     geom_point()  +
     theme_bw(base_size=10) +
     xlab("alignments aligned to genome") +
@@ -218,7 +227,8 @@ ggplot(ercc_mapped, aes(Mapped, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
 This probably explains the low mapping rate of many of the samples, the sequences
 were mostly spike-in.
 ```{r mapping-rate-decrease}
-ggplot(ercc_mapped, aes(Mapping.Rate, ercc_mapped / (ercc_mapped + ercc_unmapped))) +
+ggplot(ercc_mapped, aes(Mapping.Rate, ercc_mapped / (ercc_mapped + ercc_unmapped),
+                        color=sampletype)) +
     geom_point()  +
     theme_bw(base_size=10) +
     xlab("proportion of alignments to genome") +
@@ -229,7 +239,7 @@ ggplot(ercc_mapped, aes(Mapping.Rate, ercc_mapped / (ercc_mapped + ercc_unmapped
 The spikes are mostly EC15 and EC2.
 
 ```{r spike-in-identity}
-ggplot(ercc, aes(sample, mapped + unmapped)) + geom_point() + facet_wrap(~ spike) +
+ggplot(ercc, aes(sample, mapped + unmapped, color=sampletype)) + geom_point() + facet_wrap(~ spike) +
     scale_y_sqrt() +
     theme_bw(base_size=10) +
     xlab("sample") +
@@ -237,11 +247,13 @@ ggplot(ercc, aes(sample, mapped + unmapped)) + geom_point() + facet_wrap(~ spike
     theme(panel.grid.major = element_line(size = .5, color = "grey"),
           axis.text.x = element_blank())
 ```
+
 ```{r add-in-ercc-summaries}
 ercc_sum = ercc %>% group_by(sample) %>% summarise(ercc_mapped=sum(mapped))
 summarydata = merge(summarydata, ercc_sum, by.x="Name", by.y="sample")
 rownames(summarydata) = summarydata$Name
 ```
+
 We'll add the number of ERCC reads mapped as a variable to look at when plotting
 heatmaps.
 
@@ -272,7 +284,7 @@ isn't getting used. Something went awry during the library preparation which
 left very small insert sizes.
 
 ```{r fragment-length-plot}
-ggplot(summarydata, aes(x=Name, y=Fragment.Length.Mean)) +
+ggplot(summarydata, aes(x=Name, y=Fragment.Length.Mean, fill=sampletype)) +
     geom_bar(stat="identity") +
     theme_bw(base_size=10) +
     theme(panel.grid.major = element_line(size = .5, color = "grey"),
@@ -335,6 +347,9 @@ heatmap_fn(cor(normalized_counts, method="spearman"), fontsize=6)
 ```
 
 ## PCA of most variant genes
+We use DESeq2 here to estimate distances between the samples, normalizing by
+the library size.
+
 ```{r pca-genes}
 library(DESeq2)
 dds = DESeqDataSetFromMatrix(countData=counts,
@@ -345,9 +360,6 @@ vsd <- varianceStabilizingTransformation(dds)
 distances = assay(vsd)
 ```
 
-You can see the spread of the PCA matches the number of genes detected pretty well
-along PC1, so that is something we need to adjust for when clustering the cells.
-
 ```{r roll-own-pca}
 pc = prcomp(distances)
 rot = pc$rotation
@@ -355,6 +367,14 @@ rot = merge(rot, summarydata, by="row.names")
 ggplot(data.frame(rot), aes(x=PC1, y=PC2, color=Genes.Detected)) + geom_point() +
      theme_bw()
 ```
+
+You can see the spread of the PCA matches the number of genes detected pretty well
+along PC1, so that is something we need to adjust for when clustering the cells.
+The issue is that single-cell RNA-seq data has many artificial zeros when we
+didn't happen to sample a particular transcript, and we're seeing that in the
+simple PCA plot. There are a couple ways to handle this, below we'll use
+[Seurat](http://www.satijalab.org/seurat.html) from the Satija lab at the
+New York Genome Center.
 
 ## Seurat
 
@@ -371,7 +391,7 @@ scounts$id = NULL
 scounts = scounts[rowSums(scounts > 0) > 10,]
 keep = colSums(scounts) > 10000
 scounts = scounts[, keep]
-ssummarydata = ssummarydata[keep,]
+ssummarydata = summarydata[keep,]
 nbd.data = new("seurat", raw.data=log(scounts + 1))
 nbt = Seurat:::setup(nbd.data, project="NBT", min.cells=10, min.genes=1000,
    names.delim="_", names.field=1, is.expr=1)
@@ -516,7 +536,7 @@ isn't enough cells to do the comparisons.
 ```{r seurat-slamf1+-only}
 slamf1counts = scounts[, colnames(slampos)]
 slamf1sd = summarydata[colnames(slamf1counts),]
-slamf1.data = new("seurat", raw.data=slamf1counts)
+slamf1.data = new("seurat", raw.data=log(slamf1counts + 1))
 nbt = Seurat:::setup(slamf1.data, project="danika", min.cells=10, min.genes=1000,
    names.delim="_", names.field=1, is.expr=1)
 ```
@@ -581,9 +601,9 @@ pollen.analysis = Seurat:::setup(pollen.seurat, project="Pollen", min.cells=10,
 min.genes=1000, names.delim="_", names.field=1, is.expr=1)
 pollen.analysis = mean.var.plot(pollen.analysis, y.cutoff=2, x.low.cutoff=2,
    fxn.x=expMean, fxn.y=logVarDivMean)
-pollen=pca(pollen.analysis, do.print=FALSE)
-pca.plot(pollen, 1, 2, pt.size=2)
-pca.plot(pollen, 3, 4, pt.size=2)
+pollenpca=pca(pollen.analysis, do.print=FALSE)
+pca.plot(pollenpca, 1, 2, pt.size=2)
+pca.plot(pollenpca, 3, 4, pt.size=2)
 ```
 
 You can see by eyeballing the PCA plot that there is likely to be some separation
@@ -616,7 +636,7 @@ There is a group of cells that have around 1 million reads mapped with
 5000 genes detected. Those are cells that the protocol probably worked
 well.
 
-```{r saturation-plot}
+```{r saturation-plot-reproduction}
 dd = data.frame(Mapped=summarydata$Mapped, Genes.Detected = colSums(counts > 0))
 ggplot(dd, aes(x=Mapped, y=Genes.Detected)) +
     geom_point() +
